@@ -2,6 +2,14 @@
 
 Suite de scripts Tampermonkey para proteger tu privacidad, bloquear fingerprinting, y defender tu navegador contra malware y rastreo.
 
+## Autor
+
+**Kevin Ortega** - Diseñador Multimedia & Desarrollador Web
+
+- Portfolio: [kevinosdev.vercel.app](https://kevinosdev.vercel.app)
+- GitHub: [github.com/kevorteg](https://github.com/kevorteg)
+- Email: milife.ortega2000@gmail.com
+
 ## Scripts Disponibles
 
 | Script | Version | Descripcion |
