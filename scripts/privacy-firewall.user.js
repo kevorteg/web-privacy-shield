@@ -3,7 +3,8 @@
 // @namespace    https://github.com/web-privacy-shield
 // @version      1.0
 // @description  Firewall de privacidad: anti-fingerprint, WebRTC, clipboard, keylogger detection
-// @author       Web Privacy Shield
+// @author       Kevin Ortega
+// @homepage     https://kevinosdev.vercel.app
 // @match        *://*/*
 // @run-at       document-start
 // @grant        GM_setValue
