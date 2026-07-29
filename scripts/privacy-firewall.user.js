@@ -11,6 +11,8 @@
 // @grant        GM_getValue
 // @grant        GM_registerMenuCommand
 // @grant        GM_notification
+// @updateURL    https://raw.githubusercontent.com/kevorteg/web-privacy-shield/main/scripts/privacy-firewall.user.js
+// @downloadURL  https://raw.githubusercontent.com/kevorteg/web-privacy-shield/main/scripts/privacy-firewall.user.js
 // @license      MIT
 // ==/UserScript==
 
