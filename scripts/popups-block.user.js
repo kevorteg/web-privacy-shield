@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Super Anti-Popups & Anti-Redirects Ultra Pro
 // @namespace    http://tampermonkey.net/
-// @version      3.4
+// @version      3.5
 // @description  Bloqueo avanzado contra popups, popunders, iframes publicitarios y secuestro de clics (corregido).
 // @author       Kevin Ortega
 // @match        *://*/*
