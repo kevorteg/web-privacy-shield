@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Privacy Firewall - Anti-Fingerprint & Protection
 // @namespace    https://github.com/web-privacy-shield
-// @version      1.0
-// @description  Firewall de privacidad: anti-fingerprint, WebRTC, clipboard, keylogger detection
+// @version      1.1
+// @description  Firewall de privacidad: anti-fingerprint, WebRTC, clipboard, keylogger detection (corregido)
 // @author       Kevin Ortega
 // @homepage     https://kevinosdev.vercel.app
 // @match        *://*/*
@@ -22,7 +22,7 @@
     // ═══════════════════════════════════════════════════════════════════
 
     const CONFIG = {
-        version: '1.0',
+        version: '1.1',
         modules: {
             canvas: true,
             audio: true,
@@ -34,6 +34,7 @@
             keylogger: true
         },
         showNotifications: true,
+        showBadgeOnLoad: false, // NUEVO: badge ya no aparece automáticamente en cada página
         notificationDuration: 4000,
         noiseIntensity: 1,
         silentMode: false
@@ -294,17 +295,11 @@
         }
 
         // Fingerprint debug info
+        // CORREGIDO: se devuelven las mismas CONSTANTES que el extension objeto original,
+        // no strings. El spoofing real ocurre en getParameter (patchGetParam de arriba),
+        // que ya intercepta esas constantes y devuelve los valores falsos.
         const origGetExtension = WebGLRenderingContext.prototype.getExtension;
         WebGLRenderingContext.prototype.getExtension = function(name) {
-            if (name === 'WEBGL_debug_renderer_info') {
-                const ext = origGetExtension.apply(this, arguments);
-                if (ext) {
-                    return {
-                        UNMASKED_VENDOR_WEBGL: ext.UNMASKED_VENDOR_WEBGL,
-                        UNMASKED_RENDERER_WEBGL: ext.UNMASKED_RENDERER_WEBGL
-                    };
-                }
-            }
             return origGetExtension.apply(this, arguments);
         };
 
@@ -494,49 +489,56 @@
     function initClipboardProtection() {
         if (!CONFIG.modules.clipboard) return;
 
-        const btcPattern = /\b[13][a-km-zA-HJ-NP-Z1-9]{25,34}\b/;
+        // CORREGIDO: patrones más estrictos. El patrón de Solana anterior
+        // (base58, 32-44 caracteres) coincidía con casi cualquier hash,
+        // token de sesión o ID largo, generando falsos positivos constantes.
+        // Ahora exigimos longitud EXACTA típica de cada tipo de dirección real.
+        const btcPattern = /\b(?:[13][a-km-zA-HJ-NP-Z1-9]{25,34}|bc1[a-z0-9]{25,90})\b/;
         const ethPattern = /\b0x[0-9a-fA-F]{40}\b/;
-        const solPattern = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/;
+        const solPattern = /\b[1-9A-HJ-NP-Za-km-z]{43,44}\b/; // direcciones Solana reales son 43-44 chars
 
         function isCryptoAddress(text) {
+            if (!text || text.length > 100) return false; // evita falsos positivos en textos largos/párrafos
             return btcPattern.test(text) || ethPattern.test(text) || solPattern.test(text);
         }
 
-        // Proteger execCommand('copy')
+        // Proteger execCommand('copy') - solo registra, no bloquea
         const origExecCommand = document.execCommand;
         document.execCommand = function(cmd) {
             if (cmd === 'copy') {
                 const sel = window.getSelection();
                 const text = sel ? sel.toString() : '';
-                log('CLIPBOARD', 'Copy command intercepted: ' + text.substring(0, 30) + '...');
+                if (isCryptoAddress(text)) {
+                    log('CLIPBOARD', 'Crypto address copy detected: ' + text.substring(0, 10) + '...');
+                    showNotification('CLIPBOARD', 'Aviso: copiaste una dirección crypto. Verifica que sea la correcta.');
+                }
                 stats.clipboardBlocked++;
             }
             return origExecCommand.apply(this, arguments);
         };
 
         // Proteger Clipboard API
+        // CORREGIDO: ya NO bloqueamos la escritura (antes devolvía Promise.resolve()
+        // sin copiar nada, rompiendo copias legítimas de direcciones propias).
+        // Ahora solo avisamos y dejamos pasar la copia normalmente.
         if (navigator.clipboard && navigator.clipboard.writeText) {
             const origWriteText = navigator.clipboard.writeText.bind(navigator.clipboard);
             navigator.clipboard.writeText = function(text) {
                 if (isCryptoAddress(text)) {
                     stats.clipboardBlocked++;
                     log('CLIPBOARD', 'Crypto address clipboard write detected: ' + text.substring(0, 10) + '...');
-                    showNotification('CLIPBOARD', 'Crypto address detected in clipboard write!');
-                    return Promise.resolve();
+                    showNotification('CLIPBOARD', 'Aviso: se escribió una dirección crypto en el portapapeles.');
                 }
-                log('CLIPBOARD', 'WriteText: ' + text.substring(0, 30));
-                stats.clipboardBlocked++;
                 return origWriteText(text);
             };
         }
 
-        // Proteger paste
-        const origPaste = document.execCommand.bind(document);
+        // Proteger paste - solo alerta, nunca bloquea el pegado
         document.addEventListener('paste', function(e) {
             const text = e.clipboardData ? e.clipboardData.getData('text') : '';
             if (isCryptoAddress(text)) {
                 log('CLIPBOARD', 'Crypto address in paste detected!');
-                showNotification('CLIPBOARD', 'Warning: Crypto address in clipboard!');
+                showNotification('CLIPBOARD', 'Advertencia: pegaste una dirección crypto. Verifícala antes de continuar.');
             }
         }, true);
 
@@ -550,9 +552,14 @@
     function initKeyloggerDetection() {
         if (!CONFIG.modules.keylogger) return;
 
-        const suspiciousEvents = ['keydown', 'keyup', 'keypress', 'input', 'change'];
+        // CORREGIDO: se quitan 'input' y 'change' del set de eventos "sospechosos".
+        // Son eventos usados constantemente por validación de formularios,
+        // autocompletado, analytics legítimo, etc. y generaban demasiado ruido.
+        // Nos enfocamos en los eventos de teclado real.
+        const suspiciousEvents = ['keydown', 'keyup', 'keypress'];
         const knownScripts = new Set();
         const scriptListeners = new Map();
+        const MAX_TRACKED_SCRIPTS = 200; // CORREGIDO: evita crecimiento indefinido en sesiones largas
 
         // Hook addEventListener
         const origAddEventListener = EventTarget.prototype.addEventListener;
@@ -563,17 +570,19 @@
                 const scriptUrl = scriptMatch ? scriptMatch[1] : 'inline';
 
                 if (scriptUrl !== 'inline' && !scriptUrl.includes(window.location.hostname)) {
-                    if (!scriptListeners.has(scriptUrl)) {
-                        scriptListeners.set(scriptUrl, []);
-                    }
-                    scriptListeners.get(scriptUrl).push(type);
-
                     if (!knownScripts.has(scriptUrl)) {
+                        if (knownScripts.size >= MAX_TRACKED_SCRIPTS) {
+                            knownScripts.clear();
+                            scriptListeners.clear();
+                        }
                         knownScripts.add(scriptUrl);
+                        scriptListeners.set(scriptUrl, [type]);
                         stats.keyloggersDetected++;
                         log('KEYLOGGER', 'Third-party keyboard listener detected: ' + scriptUrl);
                         showNotification('KEYLOGGER',
                             'Suspicious keyboard listener from: ' + scriptUrl.substring(0, 40));
+                    } else {
+                        scriptListeners.get(scriptUrl).push(type);
                     }
                 }
             }
@@ -657,8 +666,7 @@
         const s = document.createElement('style');
         s.id = 'wpf-styles';
         s.textContent = `
-            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-            #wpf-badge{position:fixed;bottom:20px;right:20px;z-index:2147483647;font-family:'Inter',system-ui,sans-serif;background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:16px 20px;min-width:280px;max-width:340px;box-shadow:0 20px 60px rgba(0,0,0,.5),0 0 40px rgba(34,211,238,.05);opacity:0;transform:translateY(20px) scale(.95);transition:all .4s cubic-bezier(.4,0,.2,1);pointer-events:none}
+            #wpf-badge{position:fixed;bottom:20px;right:20px;z-index:2147483647;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:16px 20px;min-width:280px;max-width:340px;box-shadow:0 20px 60px rgba(0,0,0,.5),0 0 40px rgba(34,211,238,.05);opacity:0;transform:translateY(20px) scale(.95);transition:all .4s cubic-bezier(.4,0,.2,1);pointer-events:none}
             #wpf-badge.visible{opacity:1;transform:translateY(0) scale(1);pointer-events:auto}
             .wpf-header{display:flex;align-items:center;gap:10px;margin-bottom:12px}
             .wpf-icon{width:36px;height:36px;background:linear-gradient(135deg,#06b6d4,#0891b2);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 4px 12px rgba(6,182,212,.3)}
@@ -675,10 +683,10 @@
             .wpf-stats{background:rgba(255,255,255,.04);border-radius:10px;padding:10px 12px;margin-bottom:12px}
             .wpf-stat-row{display:flex;align-items:center;justify-content:space-between;padding:4px 0}
             .wpf-stat-label{color:#94a3b8;font-size:11px}
-            .wpf-stat-value{color:#06b6d4;font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace}
+            .wpf-stat-value{color:#06b6d4;font-size:13px;font-weight:700;font-family:ui-monospace,'Courier New',monospace}
             .wpf-stat-value.danger{color:#ef4444}
             .wpf-footer{display:flex;gap:8px}
-            .wpf-btn{flex:1;padding:8px;border:none;border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;transition:all .2s;font-family:'Inter',system-ui,sans-serif}
+            .wpf-btn{flex:1;padding:8px;border:none;border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;transition:all .2s;font-family:system-ui,-apple-system,'Segoe UI',sans-serif}
             .wpf-btn-primary{background:linear-gradient(135deg,#06b6d4,#0891b2);color:white}
             .wpf-btn-primary:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(6,182,212,.4)}
             .wpf-btn-secondary{background:rgba(255,255,255,.06);color:#94a3b8}
@@ -697,12 +705,15 @@
             .wpf-toggle::after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;background:white;border-radius:50%;transition:transform .2s}
             .wpf-toggle.active::after{transform:translateX(18px)}
             .wpf-config-footer{display:flex;gap:10px;margin-top:20px}
-            .wpf-config-btn{flex:1;padding:12px;border:none;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;transition:all .2s;font-family:'Inter',system-ui,sans-serif}
+            .wpf-config-btn{flex:1;padding:12px;border:none;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;transition:all .2s;font-family:system-ui,-apple-system,'Segoe UI',sans-serif}
             .wpf-config-btn-save{background:linear-gradient(135deg,#06b6d4,#0891b2);color:white}
             .wpf-config-btn-cancel{background:rgba(255,255,255,.06);color:#94a3b8}
             @keyframes wpf-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
             .wpf-pulse{animation:wpf-pulse .3s ease-in-out}
         `;
+        // CORREGIDO: se elimina el @import a Google Fonts. Un script de privacidad
+        // no debería hacer peticiones externas a Google en cada página visitada.
+        // Se usan fuentes del sistema (system-ui / ui-monospace) en su lugar.
         document.head.appendChild(s);
     }
 
@@ -747,7 +758,7 @@
 
         setTimeout(function() {
             badge.classList.add('visible');
-        }, 800);
+        }, 100);
     }
 
     function updateModulesDisplay() {
@@ -794,8 +805,14 @@
         }
     }
 
+    // CORREGIDO: showNotification ya no crea/muestra el badge automáticamente
+    // en segundo plano en cada página. Solo lo hace si el usuario activó
+    // CONFIG.showBadgeOnLoad, o si abre el badge manualmente desde el menú
+    // de Tampermonkey. El log de eventos sigue registrándose siempre (log()),
+    // así que nada se pierde — solo se deja de ser intrusivo visualmente.
     function showNotification(type, message) {
         if (!CONFIG.showNotifications || CONFIG.silentMode) return;
+        if (!CONFIG.showBadgeOnLoad) return;
 
         createStyles();
         createBadge();
@@ -806,6 +823,15 @@
             var badge = document.getElementById('wpf-badge');
             if (badge) badge.classList.remove('visible');
         }, CONFIG.notificationDuration);
+    }
+
+    // Muestra el badge manualmente (usado por el menú de Tampermonkey)
+    function showBadgeManually() {
+        createStyles();
+        createBadge();
+        updateBadge();
+        const badge = document.getElementById('wpf-badge');
+        if (badge) badge.classList.add('visible');
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -822,15 +848,15 @@
         const html = `<!DOCTYPE html>
 <html><head><title>Privacy Firewall - Event Log</title>
 <style>
-body{font-family:'Inter',system-ui,sans-serif;background:#0f172a;color:#e2e8f0;padding:24px;margin:0}
+body{font-family:system-ui,-apple-system,'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;padding:24px;margin:0}
 h1{font-size:20px;margin-bottom:20px;color:#06b6d4}
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:20px}
 .stat{background:rgba(255,255,255,.05);border-radius:8px;padding:12px;text-align:center}
-.stat-value{font-size:24px;font-weight:700;color:#06b6d4;font-family:'JetBrains Mono',monospace}
+.stat-value{font-size:24px;font-weight:700;color:#06b6d4;font-family:ui-monospace,'Courier New',monospace}
 .stat-label{font-size:10px;color:#64748b;text-transform:uppercase}
 .log-list{max-height:350px;overflow-y:auto}
 .log-entry{display:flex;align-items:center;gap:12px;padding:8px 12px;border-radius:6px;margin-bottom:4px;background:rgba(255,255,255,.03)}
-.log-time{color:#64748b;font-size:10px;font-family:'JetBrains Mono',monospace;min-width:80px}
+.log-time{color:#64748b;font-size:10px;font-family:ui-monospace,'Courier New',monospace;min-width:80px}
 .log-type{padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600;min-width:70px;text-align:center}
 .log-type.CANVAS{background:rgba(168,85,247,.2);color:#a855f7}
 .log-type.AUDIO{background:rgba(34,197,94,.2);color:#22c55e}
@@ -870,6 +896,8 @@ ${eventLog.map(function(e) {
     // ═══════════════════════════════════════════════════════════════════
 
     function showConfigPanel() {
+        createStyles();
+
         let overlay = document.getElementById('wpf-config-overlay');
         if (!overlay) {
             overlay = document.createElement('div');
@@ -914,6 +942,10 @@ ${eventLog.map(function(e) {
                     <div class="wpf-toggle ${CONFIG.showNotifications ? 'active' : ''}" id="wpf-toggle-notif"></div>
                 </div>
                 <div class="wpf-config-toggle">
+                    <span class="wpf-config-toggle-label">Mostrar badge en cada pagina</span>
+                    <div class="wpf-toggle ${CONFIG.showBadgeOnLoad ? 'active' : ''}" id="wpf-toggle-badge"></div>
+                </div>
+                <div class="wpf-config-toggle">
                     <span class="wpf-config-toggle-label">Modo silencioso</span>
                     <div class="wpf-toggle ${CONFIG.silentMode ? 'active' : ''}" id="wpf-toggle-silent"></div>
                 </div>
@@ -932,6 +964,9 @@ ${eventLog.map(function(e) {
         document.getElementById('wpf-toggle-notif').addEventListener('click', function() {
             this.classList.toggle('active');
         });
+        document.getElementById('wpf-toggle-badge').addEventListener('click', function() {
+            this.classList.toggle('active');
+        });
         document.getElementById('wpf-toggle-silent').addEventListener('click', function() {
             this.classList.toggle('active');
         });
@@ -945,6 +980,7 @@ ${eventLog.map(function(e) {
             });
 
             CONFIG.showNotifications = document.getElementById('wpf-toggle-notif').classList.contains('active');
+            CONFIG.showBadgeOnLoad = document.getElementById('wpf-toggle-badge').classList.contains('active');
             CONFIG.silentMode = document.getElementById('wpf-toggle-silent').classList.contains('active');
 
             saveConfig();
@@ -992,7 +1028,9 @@ ${eventLog.map(function(e) {
     // ═══════════════════════════════════════════════════════════════════
 
     function init() {
-        createStyles();
+        // NOTA: ya no se llama a createStyles()/createBadge() aquí de forma
+        // incondicional; el badge solo se crea si el usuario lo pide (menú)
+        // o si activó "Mostrar badge en cada pagina" en la config.
 
         initCanvasProtection();
         initAudioProtection();
@@ -1015,10 +1053,15 @@ ${eventLog.map(function(e) {
         console.log('[Privacy Firewall] Modules active: ' + activeModules + '/8');
         console.log('[Privacy Firewall] Session seed: ' + SESSION_SEED);
 
-        createBadge();
-        setTimeout(function() {
-            updateBadge();
-        }, 1000);
+        if (CONFIG.showBadgeOnLoad) {
+            createStyles();
+            createBadge();
+            setTimeout(function() {
+                updateBadge();
+                const badge = document.getElementById('wpf-badge');
+                if (badge) badge.classList.add('visible');
+            }, 1000);
+        }
     }
 
     if (document.readyState === 'loading') {
@@ -1031,6 +1074,7 @@ ${eventLog.map(function(e) {
     // MENU TAMPERMONKEY
     // ═══════════════════════════════════════════════════════════════════
 
+    GM_registerMenuCommand('🛡️ Ver Estado', showBadgeManually);
     GM_registerMenuCommand('⚙️ Configurar', showConfigPanel);
     GM_registerMenuCommand('📊 Ver Log', showEventLog);
     GM_registerMenuCommand('🔄 Nueva Session Seed', function() {
