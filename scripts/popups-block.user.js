@@ -1,13 +1,16 @@
 // ==UserScript==
-// @name         popups-block.user.js
+// @name         Super Anti-Popups & Anti-Redirects Ultra Pro
 // @namespace    http://tampermonkey.net/
-// @version      3.3.1
+// @version      3.4
 // @description  Bloqueo avanzado contra popups, popunders, iframes publicitarios y secuestro de clics (corregido).
-// @author       Kevin ortega
+// @author       Kevin Ortega
 // @match        *://*/*
 // @allFrames    true
 // @run-at       document-start
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/kevorteg/web-privacy-shield/main/scripts/popups-block.user.js
+// @downloadURL  https://raw.githubusercontent.com/kevorteg/web-privacy-shield/main/scripts/popups-block.user.js
+// @license      MIT
 // ==/UserScript==
 
 (function() {
